@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: accugps-private-pilot
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.pilot
+    healthCheckPath: /healthz
+    autoDeployTrigger: 'off'
+    envVars:
+      - key: PILOT_ACCOUNT_EMAILS
+        sync: false
+      - key: PILOT_INVITE_SHA256
+        sync: false

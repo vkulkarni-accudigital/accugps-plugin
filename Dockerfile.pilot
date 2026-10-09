@@ -1,0 +1,9 @@
+FROM python:3.14-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY requirements-remote.lock /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && useradd --uid 10001 --no-create-home pilot
+COPY --chown=10001:10001 accugps_connect.py accugps_tools.py authorization_core.py mcp_server.py oauth_local.py oauth_remote.py /app/
+USER 10001
+EXPOSE 10000
+CMD ["python", "oauth_remote.py"]
