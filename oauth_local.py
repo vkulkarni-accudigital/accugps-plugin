@@ -1,5 +1,6 @@
 """Local-only browser OAuth prototype. Memory-only, registered test client, no refresh tokens."""
 import argparse
+import asyncio
 from dataclasses import dataclass, field
 from html import escape
 import hmac
@@ -50,6 +51,22 @@ class Flow:
     devices: list = field(default_factory=list)
     attempts: int = 0
     busy: bool = False
+
+
+class MCPReadGate:
+    """Fail fast instead of queuing overlapping reads in this single-process pilot."""
+    def __init__(self, app):
+        self.app = app
+        self.lock = asyncio.Lock()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"] != "/mcp" or scope["method"] != "POST":
+            return await self.app(scope, receive, send)
+        if self.lock.locked():
+            return await Response("Connector busy; retry sequentially", status_code=429,
+                                  headers={"Retry-After": "5", "Cache-Control": "no-store"})(scope, receive, send)
+        async with self.lock:
+            await self.app(scope, receive, send)
 
 
 def page(title, content, status=200):
@@ -179,6 +196,7 @@ connection request needed to begin sign-in.</small>''')
         return self.page("Choose devices to share", f'''<p><strong>{escape(self.client_name(flow_id))}</strong> requests read-only access to locations, trips and alerts for selected devices.</p>
 <p>Approved results will be available to the connected client. The callback is <code>{escape(flow.params["redirect_uri"])}</code>.</p><p>{escape(message)}</p>
 <form method="post" action="{action}"><input type="hidden" name="csrf" value="{browser.csrf}">{devices}
+<label><input type="checkbox" name="camera_metadata" value="on"> Also allow camera recorder status and recording metadata for selected devices. No video, audio, playback URLs or live streams.</label>
 <button name="action" value="approve">Approve selected devices</button><button name="action" value="cancel">Cancel</button></form>''')
 
     async def connect(self, request):
@@ -225,12 +243,13 @@ connection request needed to begin sign-in.</small>''')
                 try:
                     grant_id, code = await run_in_threadpool(self.store.approve, client_id=flow.params["client_id"],
                         redirect_uri=flow.params["redirect_uri"], subject=flow.subject, account_client=flow.account,
-                        device_ids=selected, challenge=flow.params["code_challenge"], audience=self.resource)
+                        device_ids=selected, challenge=flow.params["code_challenge"], audience=self.resource,
+                        camera_metadata=form.get("camera_metadata") == "on")
                 except Exception:
                     return self.consent_page(flow_id, browser, flow, "Permissions could not be verified. Start again if access changed.")
                 # Recheck browser/flow lifetime after a slow upstream request.
                 if flow.expires <= time.time() or browser.expires <= time.time():
-                    self.store.disconnect(subject=flow.subject, grant_id=grant_id)
+                    await run_in_threadpool(self.store.disconnect, subject=flow.subject, grant_id=grant_id)
                     return self.page("Connection expired", "<p>Please start again.</p>", 400)
                 browser.grants[grant_id] = flow.subject
                 browser.grant_labels[grant_id] = self.client_names.get(flow.params["client_id"], "Registered client")
@@ -245,7 +264,7 @@ connection request needed to begin sign-in.</small>''')
             form = await self.form(request)
             if form.get("grant_type") != "authorization_code":
                 raise AuthorizationDenied("Unsupported grant")
-            token, expires = self.store.exchange(code=form.get("code", ""), client_id=form.get("client_id", ""),
+            token, expires = await run_in_threadpool(self.store.exchange, code=form.get("code", ""), client_id=form.get("client_id", ""),
                 redirect_uri=form.get("redirect_uri", ""), verifier=form.get("code_verifier", ""), audience=form.get("resource", ""))
             return JSONResponse({"access_token": token, "token_type": "Bearer", "expires_in": max(0, int(expires - time.time())), "scope": SCOPE}, headers=self.headers)
         except (ValueError, UnicodeError):
@@ -257,8 +276,8 @@ connection request needed to begin sign-in.</small>''')
             if form.get("client_id") not in self.store.clients:
                 raise AuthorizationDenied("Unknown client")
             try:
-                grant = self.store.resolve(form.get("token", ""), audience=self.resource, client_id=self.client_id)
-                self.store.disconnect(subject=grant.subject, grant_id=grant.grant_id)
+                grant = await run_in_threadpool(self.store.resolve, form.get("token", ""), audience=self.resource, client_id=self.client_id)
+                await run_in_threadpool(self.store.disconnect, subject=grant.subject, grant_id=grant.grant_id)
             except AuthorizationDenied:
                 pass
             return Response(status_code=200, headers=self.headers)
@@ -275,7 +294,7 @@ connection request needed to begin sign-in.</small>''')
                 grant_id = form.get("grant", "")
                 if grant_id not in browser.grants:
                     raise AuthorizationDenied("Unknown connection")
-                self.store.disconnect(subject=browser.grants.pop(grant_id), grant_id=grant_id)
+                await run_in_threadpool(self.store.disconnect, subject=browser.grants.pop(grant_id), grant_id=grant_id)
                 browser.grant_labels.pop(grant_id, None)
             except (ValueError, UnicodeError):
                 return self.page("Request rejected", "<p>Invalid disconnect request.</p>", 403)
@@ -284,7 +303,7 @@ connection request needed to begin sign-in.</small>''')
 
     async def verify_token(self, token):
         try:
-            grant, expires = self.store.token_info(token, audience=self.resource)
+            grant, expires = await run_in_threadpool(self.store.token_info, token, audience=self.resource)
             return AccessToken(token=token, client_id=grant.client_id, subject=grant.subject,
                                resource=self.resource, scopes=[SCOPE], expires_at=int(expires))
         except AuthorizationDenied:
@@ -303,14 +322,15 @@ connection request needed to begin sign-in.</small>''')
             def list_devices(self):
                 grant = gateway.store.resolve(gateway.current(), audience=gateway.resource)
                 return grant.client.list_devices()
-            def query(self, device_id, kind, hours=24, end_time=None):
+            def query(self, device_id, kind, hours=24, end_time=None, **options):
                 return gateway.store.query(gateway.current(), audience=gateway.resource, device_id=device_id,
-                                           kind=kind, hours=hours, end_time=end_time)
+                                           kind=kind, hours=hours, end_time=end_time, **options)
         settings = AuthSettings(issuer_url=self.base, resource_server_url=self.resource,
                                 required_scopes=[SCOPE], validate_token_resource=True)
         server = build_server(RequestClient(), self.port, auth=settings, token_verifier=self, transport_security=self.transport_security)
         app = server.streamable_http_app()
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=self.allowed_hosts)
+        app.add_middleware(MCPReadGate)
         app.routes.extend([Route("/", self.home),
             Route("/.well-known/oauth-authorization-server", self.metadata),
             Route("/authorize", self.authorize), Route("/connect", self.connect, methods=["GET", "POST"]),

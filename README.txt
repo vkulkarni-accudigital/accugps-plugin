@@ -124,6 +124,58 @@ If account data should not be processed by Render or an AI provider, use
 synthetic data or stay with the local test until those choices are approved.
 At the end of the pilot disconnect grants and suspend/delete the Render service.
 
+CAMERA METADATA UPDATE
+Three additional read-only tools are available:
+  get_camera_status(device_id)
+  get_camera_recordings(device_id, hours=1, storage="cloud", channel=null)
+  check_camera_channels(device_id, channels=[1,2,3], hours=1)
+
+Camera access requires a NEW connection with the optional camera-metadata
+checkbox explicitly selected on the device consent page. Existing grants and
+refresh tokens never gain camera permission implicitly. Recordings are queried
+for selected devices only, with upstream inventory access rechecked each time.
+The desktop adapter also forwards these tools; the legacy login bridge does not.
+
+Camera status reports recorder online/offline and ignition; it has no documented
+source status timestamp. It does not establish GPS freshness or individual lens
+health. Recording metadata contains only channel, timestamps, duration and size.
+All playback URLs and arbitrary upstream fields are stripped. This update never
+starts live streams, downloads media, invokes playback or requests video uploads.
+
+Use get_camera_recordings with storage="cloud" to discover channels represented
+in cloud uploads; cloud uploads do not establish the full installed/recorded set.
+For on-device recordings, use storage="device" and an explicit channel. Allowed
+channel inputs are bounded to 1-16, not a claim about the device's supported slots.
+Windows are 1-24 hours; returned rows are bounded to 500. Counts cover valid
+matching rows in the API response, not an independently verified complete archive.
+
+check_camera_channels accepts 1-3 distinct probe numbers per call and queries
+them sequentially against one fixed window. A typical three-channel probe is NOT
+an installation declaration. It never assumes the auxiliary camera is channel 4.
+Offline/unknown recorder status skips device recording queries; a request failure
+stops further probes. Empty, zero-size, malformed and inaccessible recordings
+are distinguished, and never automatically labeled hardware failures. Image
+quality and actual camera placement still require separately authorized viewing.
+
+The pilot now rejects overlapping MCP POST requests with HTTP 429 / Retry-After
+instead of queuing a whole fleet batch. Query devices one at a time. Authorization
+store access is moved off the event loop so a slow read does not block health
+responses. In-flight reads still serialize and disconnect may wait for a running
+read; this is not a production concurrency architecture or a security audit.
+
+Release verification: deploy the new commit manually on Render, reconnect using
+the demo account and invite, select the intended units and camera-metadata box,
+then refresh tools in the AI client. First test status on ONE known active camera,
+then cloud metadata, then a short on-device channel probe. The documented camera
+endpoints have not yet been verified live on this deployment; a permission error,
+unsupported endpoint or timeout is an API/access finding, not a broken camera.
+
+Synthetic validation: 48 tests pass. To reproduce in a virtual environment with
+the locked dependencies installed, run: python -m unittest discover -s tests
+The included fixtures contain synthetic accounts only. Tests cover camera opt-in,
+selected-device restrictions, URL redaction, malformed/empty data, offline status,
+bounded probes, MCP transport calls and health responsiveness during contention.
+
 REFERENCE DOCUMENTATION CHECKED
 https://render.com/docs/free
 https://render.com/docs/web-services

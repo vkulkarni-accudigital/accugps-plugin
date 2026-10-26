@@ -12,6 +12,7 @@ import uvicorn
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
+from starlette.concurrency import run_in_threadpool
 
 from accugps_tools import AccountClient
 from authorization_core import AuthorizationDenied, AuthorizationStore, digest
@@ -100,7 +101,8 @@ class RemoteGateway(LocalGateway):
 <p>Start the connection from your ChatGPT or Claude connector settings using
 this site's <code>/mcp</code> address. You will then sign in, enter your pilot
 invite code, and choose which devices to share.</p>
-<p>Access is read-only. Locations, trips and alerts you request are sent to your
+<p>Access is read-only. Locations, trips, alerts and explicitly approved camera
+status/recording metadata you request are sent to your
 chosen AI service. Only invited test accounts can connect.</p>
 <p><a href="/connections">Manage connections and disconnect</a></p>
 <small>Test service: sessions expire and are cleared whenever the server restarts.</small>''')
@@ -184,14 +186,14 @@ chosen AI service. Only invited test accounts can connect.</p>
         try:
             form = await self.form(request)
             if form.get("grant_type") == "authorization_code":
-                token, expires = self.store.exchange(code=form.get("code", ""), client_id=form.get("client_id", ""),
+                token, expires = await run_in_threadpool(self.store.exchange, code=form.get("code", ""), client_id=form.get("client_id", ""),
                     redirect_uri=form.get("redirect_uri", ""), verifier=form.get("code_verifier", ""),
                     audience=form.get("resource", ""))
-                refresh = self.store.issue_refresh(token, audience=self.resource)
+                refresh = await run_in_threadpool(self.store.issue_refresh, token, audience=self.resource)
             elif form.get("grant_type") == "refresh_token":
                 if form.get("scope", "accugps:read") != "accugps:read":
                     raise AuthorizationDenied("Scope expansion rejected")
-                token, refresh, expires = self.store.renew(refresh_token=form.get("refresh_token", ""),
+                token, refresh, expires = await run_in_threadpool(self.store.renew, refresh_token=form.get("refresh_token", ""),
                     client_id=form.get("client_id", ""), audience=form.get("resource", ""))
             else:
                 raise AuthorizationDenied("Unsupported grant")
@@ -208,7 +210,7 @@ chosen AI service. Only invited test accounts can connect.</p>
             form = await self.form(request)
             if form.get("client_id") not in self.store.clients:
                 raise AuthorizationDenied("Unknown client")
-            self.store.revoke_token(form.get("token", ""), audience=self.resource, client_id=form["client_id"])
+            await run_in_threadpool(self.store.revoke_token, form.get("token", ""), audience=self.resource, client_id=form["client_id"])
             return Response(status_code=200, headers=self.headers)
         except (ValueError, UnicodeError):
             return JSONResponse({"error": "invalid_request"}, status_code=400, headers=self.headers)

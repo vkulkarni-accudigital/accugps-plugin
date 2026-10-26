@@ -40,6 +40,7 @@ class ApprovedGrant:
     audience: str
     expires_at: float
     client: ScopedClient = field(repr=False, compare=False)
+    camera_metadata: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,7 @@ class AuthorizationStore:
                                if token.expires_at > now and token.grant_id in self._grants}
 
     def approve(self, *, client_id, redirect_uri, subject, account_client,
-                device_ids, challenge, audience, grant_seconds=3600):
+                device_ids, challenge, audience, grant_seconds=3600, camera_metadata=False):
         """Create a grant after the browser adapter verifies sign-in and consent."""
         if client_id not in self.clients or redirect_uri not in self.clients[client_id]:
             raise AuthorizationDenied("Unregistered client or redirect URI")
@@ -116,6 +117,8 @@ class AuthorizationStore:
             raise AuthorizationDenied("S256 PKCE challenge required")
         if isinstance(grant_seconds, bool) or not isinstance(grant_seconds, int) or not 1 <= grant_seconds <= 3600:
             raise AuthorizationDenied("Grant lifetime must be 1-3600 seconds")
+        if type(camera_metadata) is not bool:
+            raise AuthorizationDenied("Explicit camera metadata consent required")
         selected = frozenset(device_ids)
         current = {row["device_id"] for row in account_client.list_devices()}
         if not selected or not selected.issubset(current):
@@ -125,7 +128,7 @@ class AuthorizationStore:
             now = self.clock()
             grant_id = secrets.token_urlsafe(32)
             self._grants[grant_id] = ApprovedGrant(grant_id, client_id, subject, audience,
-                                                  now + grant_seconds, ScopedClient(account_client, selected))
+                                                  now + grant_seconds, ScopedClient(account_client, selected), camera_metadata)
             code = secrets.token_urlsafe(32)
             self._codes[digest(code)] = PendingCode(grant_id, redirect_uri, challenge, min(now + 60, now + grant_seconds))
             return grant_id, code
@@ -193,11 +196,13 @@ class AuthorizationStore:
             if grant and grant.audience == audience and grant.client_id == client_id:
                 self.disconnect(subject=grant.subject, grant_id=grant.grant_id)
 
-    def query(self, token, *, audience, device_id, kind, hours=24, end_time=None):
+    def query(self, token, *, audience, device_id, kind, hours=24, end_time=None, **options):
         # Keep disconnect atomic with reads in this small synchronous prototype.
         with self._lock:
             grant = self.resolve(token, audience=audience)
-            return grant.client.query(device_id, kind, hours, end_time)
+            if kind.startswith("camera-") and not grant.camera_metadata:
+                raise AuthorizationDenied("Reconnect and explicitly approve camera status and recording metadata")
+            return grant.client.query(device_id, kind, hours, end_time, **options)
 
     def token_info(self, token, *, audience):
         with self._lock:
