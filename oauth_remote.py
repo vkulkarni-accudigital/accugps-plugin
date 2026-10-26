@@ -105,6 +105,7 @@ invite code, and choose which devices to share.</p>
 status/recording metadata you request are sent to your
 chosen AI service. Only invited test accounts can connect.</p>
 <p><a href="/connections">Manage connections and disconnect</a></p>
+<p><a href="/dashboard">Open private fleet monitoring dashboard</a></p>
 <small>Test service: sessions expire and are cleared whenever the server restarts.</small>''')
 
     def login_page(self, flow_id, browser, message=""):
@@ -126,6 +127,20 @@ chosen AI service. Only invited test accounts can connect.</p>
                     or not hmac.compare_digest(digest(invite), self.invite_hash)):
                 raise AuthorizationDenied("Pilot invite required")
         return form
+
+    def consent_page(self, flow_id, browser, flow, message=""):
+        response = super().consent_page(flow_id, browser, flow, message)
+        if flow.params["client_id"] == "accugps-monitoring-dashboard":
+            text = response.body.decode("utf-8").replace(
+                "requests read-only access to locations, trips and alerts for selected devices.",
+                "requests read-only GPS freshness and coordinate-validity checks for selected devices. "
+                "Coordinates and addresses are not displayed.").replace(
+                "Approved results will be available to the connected client.",
+                "Approved results will be available to this private dashboard. "
+                "The dashboard does not send results to an AI service.")
+            response.body = text.encode("utf-8")
+            response.headers["content-length"] = str(len(response.body))
+        return response
 
     def callback(self, flow, values):
         return super().callback(flow, {**values, "iss": self.base})
@@ -223,7 +238,10 @@ chosen AI service. Only invited test accounts can connect.</p>
                             headers=self.headers)
 
     def app(self):
+        from monitoring_dashboard import Dashboard
+        self.dashboard = Dashboard(self)
         app = super().app()
+        self.dashboard.install(app)
         app.routes[:] = [route for route in app.routes
                          if getattr(route, "path", None) != "/.well-known/oauth-protected-resource/mcp"]
         app.routes.extend([Route("/register", self.register, methods=["POST"]),

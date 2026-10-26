@@ -76,6 +76,8 @@ class AuthorizationStore:
                 self._validate_url(uri, allow_loopback)
             self.clients[client_id] = frozenset(redirects)
         self.clock = clock
+        # Optional trusted server-side restrictions for first-party clients.
+        self.client_read_kinds = {}
         self._grants, self._codes, self._tokens, self._refresh = {}, {}, {}, {}
         self._spent_refresh = {}
         self._lock = threading.RLock()
@@ -200,6 +202,9 @@ class AuthorizationStore:
         # Keep disconnect atomic with reads in this small synchronous prototype.
         with self._lock:
             grant = self.resolve(token, audience=audience)
+            allowed = self.client_read_kinds.get(grant.client_id)
+            if allowed is not None and kind not in allowed:
+                raise AuthorizationDenied("This client is not approved for that data type")
             if kind.startswith("camera-") and not grant.camera_metadata:
                 raise AuthorizationDenied("Reconnect and explicitly approve camera status and recording metadata")
             return grant.client.query(device_id, kind, hours, end_time, **options)

@@ -95,8 +95,10 @@ into an AI conversation cannot be withdrawn by disconnecting.
 SECURITY AND LIMITS
 Browser cookies are Secure/HttpOnly/SameSite=Lax. HTTPS, exact host/origin,
 CSRF, one-use codes, PKCE, selected-device scope and upstream permissions are
-checked. Raw connector tokens aren't stored, only hashes. AccuGPS access
-tokens and account clients remain in memory. Passwords are briefly handled
+checked. The authorization store retains connector token hashes. The first-party
+dashboard retains its own access/refresh tokens in server memory only, never in
+browser storage or page URLs. AccuGPS access tokens and account clients remain
+in memory. Passwords are briefly handled
 by the gateway to call the fixed AccuGPS HTTPS login API; no password file is
 created. This is not upstream AccuGPS OAuth/SSO. Render terminates TLS and
 therefore is part of the trusted processing path. GPT/Claude receive requested
@@ -167,14 +169,82 @@ Release verification: deploy the new commit manually on Render, reconnect using
 the demo account and invite, select the intended units and camera-metadata box,
 then refresh tools in the AI client. First test status on ONE known active camera,
 then cloud metadata, then a short on-device channel probe. The documented camera
-endpoints have not yet been verified live on this deployment; a permission error,
-unsupported endpoint or timeout is an API/access finding, not a broken camera.
+recorder status endpoint has returned online/ignition status in a live check.
+Cloud and on-device recording requests failed in that check and remain under
+investigation; a permission error, unsupported endpoint or timeout is an API/access
+finding, not a broken camera.
 
-Synthetic validation: 48 tests pass. To reproduce in a virtual environment with
+Synthetic validation: 59 Python tests pass. To reproduce in a virtual environment with
 the locked dependencies installed, run: python -m unittest discover -s tests
 The included fixtures contain synthetic accounts only. Tests cover camera opt-in,
 selected-device restrictions, URL redaction, malformed/empty data, offline status,
 bounded probes, MCP transport calls and health responsiveness during contention.
+
+PRIVATE MONITORING DASHBOARD
+After manually deploying this update, open https://<your-host>/dashboard.
+No new environment variables, paid service or AI subscription are required.
+Each viewer signs in through the existing invite, allowed account, selected-device
+and optional camera-metadata consent flow. Use account credentials privately in
+the browser. Do not send credentials, invite codes or tokens in chat.
+
+Select the intended devices (the commissioning pilot has nine). After the first
+GPS cycle finishes, tick Camera unit for each actual camera recorder and click
+Save camera selection. Do not mark OBD trackers as camera recorders. Hardware
+type is team configuration, not inferred from aliases or account list membership.
+The dashboard checks at most the first 50 currently authorized selected devices;
+the UI warns if more than 50 were approved. Use a smaller selection for this pilot.
+
+GPS timestamps, coordinate bounds validity, recorder status and ignition are
+collected sequentially. Source coordinates and addresses are discarded from the
+dashboard projection. GPS age is not end-to-end transmission latency: there is
+no server-receive timestamp. A parked/sleeping unit can have an old fix. Recorder
+source timestamps are unavailable. Do not certify zero GPS delay or lens health.
+
+The browser requests the current snapshot every 30 seconds while visible. Each
+snapshot requires a valid session and a current upstream inventory access check;
+if that check fails, observations are withheld. Telemetry collection is shared
+only by the same account subject, selected-device set, camera consent and camera
+configuration. Another account or permission scope never shares that collection.
+Current upstream access is also checked within every telemetry query.
+
+A new cycle starts no sooner than five minutes after the preceding cycle finishes,
+on the next visible-page request. It is not an exact five-minute service-level
+promise: slow APIs, sequential reads, throttling, sleeps and restarts can delay it.
+No collection is scheduled while pages are closed; an already-started bounded
+cycle may finish. Checks also share the existing synchronous authorization lock
+with MCP reads. This is a small pilot, not a production monitoring architecture.
+
+The detail view shows the last 20 check events per unit and an optional manual
+last-hour CLOUD recording metadata check, limited to one attempt per account/unit
+per five minutes. It does not query on-device channels, start streams, upload
+clips or retrieve footage. Empty metadata is not a camera failure. Auxiliary
+channel mapping and image quality remain unverified. No outbound notifications
+or durable historical reporting are implemented.
+
+On API failure, the last successful GPS/recorder observation remains labeled with
+its original check time and the failed attempt time. Raw exception details are
+not returned. Source inventory failure or revoked/expired sign-in withholds data.
+The dashboard's client is separately restricted to location, recorder status and
+cloud recording metadata; its session cannot query trips, alerts or fuel data.
+
+Views share AccuGPS account identity; this does NOT implement individual employee
+identity, roles, invitations or a team audit trail. Anyone using the same account
+with the pilot invite can request that account's devices and explicitly approve
+them. Never share a browser session/token. Dashboard disconnect revokes its own
+grant, leaving separately approved GPT/Claude grants independent.
+
+Sessions last at most one hour. Tokens, collections and history live only in
+memory, clear on restart, and are not stored in Git or browser localStorage.
+There is no durable credential vault, unattended worker or independent security
+audit. Keep testing limited to approved accounts/devices. Closing the browser is
+not a substitute for Disconnect; a session expires automatically at its limit.
+
+UI checks (Node.js, no packages required):
+  python -c "from pathlib import Path; from dashboard_view import SCRIPT; Path('dashboard-app.js').write_text(SCRIPT, encoding='utf-8')"
+  node --check dashboard-app.js
+  node tests/test_dashboard_view.cjs dashboard-app.js
+The generated file is a public static script, with no account data or secrets;
+keep it out of commits. Isolated rendering tests do not replace browser/device QA.
 
 REFERENCE DOCUMENTATION CHECKED
 https://render.com/docs/free
